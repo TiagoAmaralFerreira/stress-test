@@ -75,7 +75,6 @@ func worker(url string, results chan<- Result, wg *sync.WaitGroup) {
 
 		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
-
 		results <- Result{StatusCode: resp.StatusCode, Duration: duration}
 	}
 }
