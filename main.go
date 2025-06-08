@@ -3,121 +3,91 @@ package main
 import (
 	"flag"
 	"fmt"
-	"io"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 )
 
 type Result struct {
 	StatusCode int
-	Duration   time.Duration
 	Error      error
 }
 
-type Report struct {
-	TotalRequests      int
-	TotalTime          time.Duration
-	SuccessCount       int
-	StatusDistribution map[int]int
+func worker(url string, requests int, wg *sync.WaitGroup, results chan<- Result) {
+	defer wg.Done()
+	for i := 0; i < requests; i++ {
+		resp, err := http.Get(url)
+		if err != nil {
+			results <- Result{Error: err}
+			continue
+		}
+		results <- Result{StatusCode: resp.StatusCode}
+		resp.Body.Close()
+	}
 }
 
 func main() {
+	// Parse flags
 	url := flag.String("url", "", "URL do serviço a ser testado")
-	requests := flag.Int("requests", 100, "Número total de requests")
-	concurrency := flag.Int("concurrency", 10, "Número de chamadas simultâneas")
-
+	requests := flag.Int("requests", 1, "Número total de requests")
+	concurrency := flag.Int("concurrency", 1, "Número de chamadas simultâneas")
 	flag.Parse()
 
-	if *url == "" {
-		fmt.Println("Erro: URL é obrigatória")
-		flag.Usage()
-		return
+	if *url == "" || *requests < 1 || *concurrency < 1 {
+		fmt.Println("Uso: --url=<url> --requests=<total> --concurrency=<n>")
+		os.Exit(1)
 	}
 
-	fmt.Printf("Iniciando teste de carga:\n")
-	fmt.Printf("URL: %s\n", *url)
-	fmt.Printf("Total de Requests: %d\n", *requests)
-	fmt.Printf("Concorrência: %d\n\n", *concurrency)
+	fmt.Printf("Iniciando teste de carga em %s com %d requisições e %d concorrências\n", *url, *requests, *concurrency)
 
-	startTime := time.Now()
+	// Execução
+	start := time.Now()
 	results := make(chan Result, *requests)
 	var wg sync.WaitGroup
 
+	reqsPerWorker := *requests / *concurrency
+	extra := *requests % *concurrency
+
 	for i := 0; i < *concurrency; i++ {
+		n := reqsPerWorker
+		if i < extra {
+			n++
+		}
 		wg.Add(1)
-		go worker(*url, results, &wg)
+		go worker(*url, n, &wg, results)
 	}
 
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
+	wg.Wait()
+	close(results)
+	duration := time.Since(start)
 
-	report := processResults(results)
-	report.TotalTime = time.Since(startTime)
-	printReport(report)
-}
+	// Análise de resultados
+	total := 0
+	success := 0
+	statusCount := make(map[int]int)
+	failures := 0
 
-func worker(url string, results chan<- Result, wg *sync.WaitGroup) {
-	defer wg.Done()
-	client := &http.Client{}
-
-	for {
-		start := time.Now()
-		resp, err := client.Get(url)
-		duration := time.Since(start)
-
-		if err != nil {
-			results <- Result{Error: err, Duration: duration}
+	for r := range results {
+		total++
+		if r.Error != nil {
+			failures++
 			continue
 		}
-
-		io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
-		results <- Result{StatusCode: resp.StatusCode, Duration: duration}
-	}
-}
-
-func processResults(results <-chan Result) Report {
-	report := Report{
-		StatusDistribution: make(map[int]int),
-	}
-
-	for result := range results {
-		report.TotalRequests++
-
-		if result.Error != nil {
-			report.StatusDistribution[0]++
-			continue
+		if r.StatusCode == 200 {
+			success++
 		}
-
-		report.StatusDistribution[result.StatusCode]++
-
-		if result.StatusCode == http.StatusOK {
-			report.SuccessCount++
-		}
+		statusCount[r.StatusCode]++
 	}
 
-	return report
-}
-
-func printReport(report Report) {
-	fmt.Println("\nRelatório do Teste de Carga")
-	fmt.Println("==========================")
-	fmt.Printf("Tempo Total: %v\n", report.TotalTime)
-	fmt.Printf("Total de Requests: %d\n", report.TotalRequests)
-	fmt.Printf("Requests com Status 200: %d\n", report.SuccessCount)
-
-	fmt.Println("\nDistribuição de Status HTTP:")
-	for status, count := range report.StatusDistribution {
-		if status == 0 {
-			fmt.Printf("Erros: %d\n", count)
-		} else {
-			fmt.Printf("Status %d: %d\n", status, count)
-		}
+	// Relatório
+	fmt.Println("\n=== Relatório de Teste de Carga ===")
+	fmt.Printf("Tempo total: %v\n", duration)
+	fmt.Printf("Requests totais: %d\n", total)
+	fmt.Printf("Sucesso (HTTP 200): %d\n", success)
+	fmt.Printf("Falhas: %d\n", failures)
+	fmt.Println("Distribuição de códigos HTTP:")
+	for code, count := range statusCount {
+		fmt.Printf("  %d: %d\n", code, count)
 	}
-
-	rps := float64(report.TotalRequests) / report.TotalTime.Seconds()
-	fmt.Printf("\nRequests por Segundo: %.2f\n", rps)
 }
