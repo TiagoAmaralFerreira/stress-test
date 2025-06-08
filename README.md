@@ -1,6 +1,7 @@
 Para executar o código siga os comandos abaixo:
 
 sudo docker build -t load-tester .
+
 sudo docker run --rm load-tester --url=http://google.com --requests=100 --concurrency=10
 
 Após isso deverá ter o retorno esperado para o execicio conforme o print abaixo.
